@@ -4,6 +4,7 @@ local typedefs = require "kong.db.schema.typedefs"
 local Entity = require "kong.db.schema.entity"
 local utils = require "kong.tools.utils"
 local plugin_servers = require "kong.runloop.plugin_servers"
+local schema_topological_sort = require "kong.db.schema.topological_sort"
 
 
 local plugin_loader = {}
@@ -244,16 +245,26 @@ function plugin_loader.load_entities(plugin, errors, loader_fn)
   if not has_daos then
     return {}
   end
-  local iterator = daos_schemas[1] and ipairs or pairs
-  local res = {}
-  for name, schema_def in iterator(daos_schemas) do
-    if name ~= "tables" and schema_def.name then
-      local ret, err = loader_fn(plugin, schema_def, errors)
-      if err then
-        return nil, err
+  if not daos_schemas[1] and next(daos_schemas) then
+    -- daos_schemas is a non-empty hash. Sort it topologically in order to avoid errors when loading
+    -- relationships before loading entities within the same plugin
+    local arr_schemas = {}
+    for name, schema_def in pairs(daos_schemas) do
+      -- ignore deprecated "tables" entry in DAO
+      if name ~= "tables" and schema_def.name then
+        arr_schemas[#arr_schemas + 1] = schema_def
       end
-      res[schema_def.name] = ret
     end
+    daos_schemas = schema_topological_sort(arr_schemas)
+  end
+
+  local res = {}
+  for _, schema_def in ipairs(daos_schemas) do
+    local ret, err = loader_fn(plugin, schema_def, errors)
+    if err then
+      return nil, err
+    end
+    res[schema_def.name] = ret
   end
 
   return res
